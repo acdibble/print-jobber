@@ -36,7 +36,7 @@ struct DailyWeather {
 struct HourlyWeather {
     temperature_2m: Vec<f64>,
 }
-use escpos::{driver, printer::Printer, printer_options::PrinterOptions, utils::Protocol};
+use escpos::{driver, printer::Printer, printer_options::PrinterOptions, utils::{JustifyMode, Protocol}};
 use std::{env, time::Duration};
 
 type UsbPrinter = Printer<driver::UsbDriver>;
@@ -306,8 +306,8 @@ async fn weather(
     let daily = &response.daily;
     let hourly = &response.hourly;
     let desc = weather_code_to_description(daily.weather_code[0]);
-    let border = "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~";
-    let divider = "------------------------------------------------";
+    let border = "~".repeat(CHARS_PER_LINE);
+    let divider = "-".repeat(CHARS_PER_LINE);
 
     let sunrise_hour = parse_hour(&daily.sunrise[0]);
     let sunset_hour = parse_hour(&daily.sunset[0]);
@@ -316,66 +316,76 @@ async fn weather(
     let daylight_bar = render_daylight_bar(sunrise_hour, sunset_hour);
     let hourly_temps = render_hourly_temps(&hourly.temperature_2m);
 
-    let forecast = format!(
-        r#"
-{border}
-           * * * BERLIN * * *
-              {date}
-{border}
-
-            ~ {desc} ~
-
-{divider}
-  High: {high:.0}F          Low: {low:.0}F
-  Feels: {feels_high:.0}F / {feels_low:.0}F
-{divider}
-  Precip: {precip}%       UV Index: {uv:.0}
-  Wind: {wind:.0} mph (gusts {gusts:.0})
-{divider}
-
-  HOURLY TEMPERATURES
-{hourly_temps}
-{divider}
-
-  DAYLIGHT  >=day  -=night
-{daylight_bar}
-     Sunrise: {sunrise}    Sunset: {sunset}
-
-{divider}
-
-  MOON: {moon_symbol} {moon_name}
-
-{border}
-"#,
-        border = border,
-        date = &daily.time[0],
-        desc = desc,
-        divider = divider,
-        high = daily.temperature_2m_max[0],
-        low = daily.temperature_2m_min[0],
-        feels_high = daily.apparent_temperature_max[0],
-        feels_low = daily.apparent_temperature_min[0],
-        precip = daily.precipitation_probability_max[0],
-        uv = daily.uv_index_max[0],
-        wind = daily.wind_speed_10m_max[0],
-        gusts = daily.wind_gusts_10m_max[0],
-        hourly_temps = hourly_temps,
-        daylight_bar = daylight_bar,
-        sunrise = format_time(&daily.sunrise[0]),
-        sunset = format_time(&daily.sunset[0]),
-        moon_symbol = moon_symbol,
-        moon_name = moon_name
-    );
-
     if printer.is_none() {
         eprintln!("No printer connected, outputting to stdout");
-        println!("{}", "-".repeat(CHARS_PER_LINE));
     }
 
-    for line in forecast.lines() {
-        write_chunk(&mut printer, line);
-        write_chunk(&mut printer, "\n");
+    // Helper macros for printing
+    macro_rules! writeln_left {
+        ($($arg:tt)*) => {
+            if let Some(ref mut p) = printer {
+                let _ = p.justify(JustifyMode::LEFT);
+                let _ = p.writeln(&format!($($arg)*));
+            } else {
+                println!($($arg)*);
+            }
+        };
     }
+
+    macro_rules! writeln_center {
+        ($($arg:tt)*) => {
+            if let Some(ref mut p) = printer {
+                let _ = p.justify(JustifyMode::CENTER);
+                let _ = p.writeln(&format!($($arg)*));
+            } else {
+                println!($($arg)*);
+            }
+        };
+    }
+
+    // Header
+    writeln_left!("{}", border);
+    writeln_center!("* * * BERLIN * * *");
+    writeln_center!("{}", &daily.time[0]);
+    writeln_left!("{}", border);
+    writeln_center!("");
+    writeln_center!("~ {} ~", desc);
+    writeln_center!("");
+
+    // Temperature
+    writeln_left!("{}", divider);
+    writeln_left!("High: {:.0}F          Low: {:.0}F", daily.temperature_2m_max[0], daily.temperature_2m_min[0]);
+    writeln_left!("Feels: {:.0}F / {:.0}F", daily.apparent_temperature_max[0], daily.apparent_temperature_min[0]);
+    writeln_left!("{}", divider);
+
+    // Conditions
+    writeln_left!("Precip: {}%       UV Index: {:.0}", daily.precipitation_probability_max[0], daily.uv_index_max[0]);
+    writeln_left!("Wind: {:.0} mph (gusts {:.0})", daily.wind_speed_10m_max[0], daily.wind_gusts_10m_max[0]);
+    writeln_left!("{}", divider);
+    writeln_left!("");
+
+    // Hourly temps
+    writeln_center!("HOURLY TEMPERATURES");
+    for line in hourly_temps.lines() {
+        writeln_left!("{}", line);
+    }
+    writeln_left!("{}", divider);
+    writeln_left!("");
+
+    // Daylight
+    writeln_center!("DAYLIGHT");
+    writeln_left!(">=day  -=night");
+    for line in daylight_bar.lines() {
+        writeln_left!("{}", line);
+    }
+    writeln_left!("Sunrise: {}    Sunset: {}", format_time(&daily.sunrise[0]), format_time(&daily.sunset[0]));
+    writeln_left!("{}", divider);
+    writeln_left!("");
+
+    // Moon
+    writeln_center!("MOON: {} {}", moon_symbol, moon_name);
+    writeln_left!("");
+    writeln_left!("{}", border);
 
     if let Some(ref mut printer) = printer {
         eprintln!("Flushing print buffer...");
@@ -384,8 +394,6 @@ async fn weather(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
         eprintln!("Print successful");
-    } else {
-        println!("{}", "-".repeat(CHARS_PER_LINE));
     }
 
     Ok(())
