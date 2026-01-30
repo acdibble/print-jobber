@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            artifact: print-jobber-linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with cross
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/print-jobber dist/
+          cd dist
+          tar -czvf ${{ matrix.artifact }}.tar.gz print-jobber
+          mv ${{ matrix.artifact }}.tar.gz ../
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true
