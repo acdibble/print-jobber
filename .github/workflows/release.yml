@@ -116,3 +116,10 @@ jobs:
           tag_name: ${{ needs.version.outputs.new_version }}
           files: artifacts/*.tar.gz
           generate_release_notes: true
+
+      - name: Update latest release
+        run: |
+          gh release delete latest --yes || true
+          gh release create latest artifacts/*.tar.gz --title "Latest" --notes "Latest release (${{ needs.version.outputs.new_version }})"
+        env:
+          GH_TOKEN: ${{ github.token }}
