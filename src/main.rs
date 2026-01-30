@@ -1,10 +1,43 @@
-use axum::{Router, body::Bytes, extract::{Query, State}, http::StatusCode, routing::post};
+use axum::{Router, body::Bytes, extract::{Query, State}, http::StatusCode, routing::{get, post}};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct PrintParams {
     #[serde(default)]
     raw: bool,
+}
+
+#[derive(Deserialize)]
+struct WeatherParams {
+    #[serde(default = "default_city")]
+    city: String,
+}
+
+fn default_city() -> String { "Berlin".to_string() }
+
+#[derive(Deserialize)]
+struct GeocodingResponse {
+    results: Option<Vec<GeocodingResult>>,
+}
+
+#[derive(Deserialize)]
+struct GeocodingResult {
+    name: String,
+    latitude: f64,
+    longitude: f64,
+}
+
+#[derive(Deserialize)]
+struct WeatherResponse {
+    daily: DailyWeather,
+}
+
+#[derive(Deserialize)]
+struct DailyWeather {
+    temperature_2m_max: Vec<f64>,
+    temperature_2m_min: Vec<f64>,
+    precipitation_probability_max: Vec<u8>,
+    weather_code: Vec<u8>,
 }
 use escpos::{driver, printer::Printer, printer_options::PrinterOptions, utils::Protocol};
 use std::{env, time::Duration};
@@ -58,7 +91,10 @@ fn create_printer() -> Option<UsbPrinter> {
 #[tokio::main]
 async fn main() {
     let printer = create_printer();
-    let app = Router::new().route("/", post(print)).with_state(printer);
+    let app = Router::new()
+        .route("/", post(print))
+        .route("/weather", get(weather))
+        .with_state(printer);
 
     let listener = tokio::net::TcpListener::bind(format!(
         "0.0.0.0:{}",
@@ -134,4 +170,86 @@ async fn print(
     }
 
     Ok(())
+}
+
+fn weather_code_to_description(code: u8) -> &'static str {
+    match code {
+        0 => "Clear sky",
+        1 => "Mainly clear",
+        2 => "Partly cloudy",
+        3 => "Overcast",
+        45 | 48 => "Foggy",
+        51 | 53 | 55 => "Drizzle",
+        61 | 63 | 65 => "Rain",
+        66 | 67 => "Freezing rain",
+        71 | 73 | 75 => "Snow",
+        77 => "Snow grains",
+        80 | 81 | 82 => "Rain showers",
+        85 | 86 => "Snow showers",
+        95 => "Thunderstorm",
+        96 | 99 => "Thunderstorm with hail",
+        _ => "Unknown",
+    }
+}
+
+async fn weather(Query(params): Query<WeatherParams>) -> Result<String, StatusCode> {
+    eprintln!("Weather request for city={}", params.city);
+
+    let geo_url = format!(
+        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1",
+        urlencoding::encode(&params.city)
+    );
+
+    let geo_response = reqwest::get(&geo_url)
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to geocode city: {:?}", e);
+            StatusCode::BAD_GATEWAY
+        })?
+        .json::<GeocodingResponse>()
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to parse geocoding response: {:?}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let location = geo_response
+        .results
+        .and_then(|r| r.into_iter().next())
+        .ok_or_else(|| {
+            eprintln!("City not found: {}", params.city);
+            StatusCode::NOT_FOUND
+        })?;
+
+    eprintln!("Resolved {} to lat={}, lon={}", location.name, location.latitude, location.longitude);
+
+    let url = format!(
+        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=1",
+        location.latitude, location.longitude
+    );
+
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to fetch weather: {:?}", e);
+            StatusCode::BAD_GATEWAY
+        })?
+        .json::<WeatherResponse>()
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to parse weather response: {:?}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let daily = &response.daily;
+    let forecast = format!(
+        "{}\n\nHigh: {:.0}F  Low: {:.0}F\nPrecip: {}%\n{}\n",
+        location.name,
+        daily.temperature_2m_max[0],
+        daily.temperature_2m_min[0],
+        daily.precipitation_probability_max[0],
+        weather_code_to_description(daily.weather_code[0])
+    );
+
+    Ok(forecast)
 }
