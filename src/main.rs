@@ -1,10 +1,27 @@
-use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post};
+use axum::{Router, body::Bytes, extract::{Query, State}, http::StatusCode, routing::post};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct PrintParams {
+    #[serde(default)]
+    raw: bool,
+}
 use escpos::{driver, printer::Printer, printer_options::PrinterOptions, utils::Protocol};
 use std::{env, time::Duration};
 
 type UsbPrinter = Printer<driver::UsbDriver>;
 
 const CHARS_PER_LINE: usize = 48;
+
+fn write_chunk(printer: &mut Option<UsbPrinter>, chunk: &str) {
+    if let Some(printer) = printer {
+        if let Err(e) = printer.write(chunk) {
+            eprintln!("Failed to write chunk: {:?}", e);
+        }
+    } else {
+        print!("{}", chunk);
+    }
+}
 
 fn create_printer() -> Option<UsbPrinter> {
     eprintln!("Attempting to open USB printer (vendor=0x04b8, product=0x0e28)...");
@@ -57,10 +74,11 @@ async fn main() {
 
 async fn print(
     State(mut printer): State<Option<UsbPrinter>>,
+    Query(params): Query<PrintParams>,
     body: Bytes,
 ) -> Result<(), StatusCode> {
     let str = std::str::from_utf8(&body).or(Err(StatusCode::UNPROCESSABLE_ENTITY))?;
-    eprintln!("Received print request: {} bytes", body.len());
+    eprintln!("Received print request: {} bytes (raw={})", body.len(), params.raw);
     eprintln!("Content: {:?}", str);
 
     if let None = printer {
@@ -68,38 +86,40 @@ async fn print(
         println!("{}", "-".repeat(CHARS_PER_LINE))
     }
 
-    for line in str.lines() {
-        let mut chars_written = 0;
-        let mut extra_char = 0;
-
-        let mut write_chunk = |chunk: &str| {
-            if let Some(ref mut printer) = printer {
-                if let Err(e) = printer.write(chunk) {
-                    eprintln!("Failed to write chunk: {:?}", e);
-                }
-            } else {
-                print!("{}", chunk)
-            }
-        };
-
-        for chunk in line.split_ascii_whitespace() {
-            if chars_written + chunk.len() + extra_char > CHARS_PER_LINE {
-                write_chunk("\n");
-                chars_written = 0;
-                extra_char = 0;
-            }
-
-            if extra_char == 1 {
-                write_chunk(" ")
-            }
-
-            write_chunk(chunk);
-
-            chars_written += extra_char + chunk.len();
-            extra_char = 1;
+    if params.raw {
+        for line in str.lines() {
+            write_chunk(&mut printer, line);
+            write_chunk(&mut printer, "\n");
         }
+    } else {
+        for line in str.lines() {
+            let mut chars_written = 0;
+            let mut extra_char = 0;
 
-        write_chunk("\n")
+            for chunk in line.split_ascii_whitespace() {
+                if chunk.len() > CHARS_PER_LINE {
+                    eprintln!("Chunk too long ({} chars): {:?}", chunk.len(), chunk);
+                    return Err(StatusCode::UNPROCESSABLE_ENTITY);
+                }
+
+                if chars_written + chunk.len() + extra_char > CHARS_PER_LINE {
+                    write_chunk(&mut printer, "\n");
+                    chars_written = 0;
+                    extra_char = 0;
+                }
+
+                if extra_char == 1 {
+                    write_chunk(&mut printer, " ");
+                }
+
+                write_chunk(&mut printer, chunk);
+
+                chars_written += extra_char + chunk.len();
+                extra_char = 1;
+            }
+
+            write_chunk(&mut printer, "\n");
+        }
     }
 
     if let Some(ref mut printer) = printer {
