@@ -7,3 +7,13 @@ pre-build = [
     "tar xjf libusb-1.0.27.tar.bz2",
     "cd libusb-1.0.27 && ./configure --host=aarch64-linux-gnu --prefix=/usr/aarch64-linux-gnu --disable-udev && make -j$(nproc) && make install"
 ]
+
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update",
+    "apt-get install --assume-yes libudev-dev:$CROSS_DEB_ARCH wget",
+    "wget -q https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2",
+    "tar xjf libusb-1.0.27.tar.bz2",
+    "cd libusb-1.0.27 && ./configure --host=arm-linux-gnueabihf --prefix=/usr/arm-linux-gnueabihf --disable-udev && make -j$(nproc) && make install"
+]
