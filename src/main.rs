@@ -4,20 +4,36 @@ use std::{env, time::Duration};
 
 type UsbPrinter = Printer<driver::UsbDriver>;
 
+const CHARS_PER_LINE: usize = 48;
+
 fn create_printer() -> Option<UsbPrinter> {
-    let driver =
-        driver::UsbDriver::open(0x04b8, 0x0e28, Some(Duration::from_secs(2)), None).ok()?;
+    eprintln!("Attempting to open USB printer (vendor=0x04b8, product=0x0e28)...");
+    let driver = match driver::UsbDriver::open(0x04b8, 0x0e28, Some(Duration::from_secs(2)), None) {
+        Ok(d) => {
+            eprintln!("USB driver opened successfully");
+            d
+        }
+        Err(e) => {
+            eprintln!("Failed to open USB driver: {:?}", e);
+            return None;
+        }
+    };
+
     let mut printer = Printer::new(
         driver,
         Protocol::default(),
         Some(PrinterOptions::new(
             Some(escpos::utils::PageCode::PC437),
             None,
-            80,
+            CHARS_PER_LINE as u8,
         )),
     );
 
-    printer.init().ok()?;
+    if let Err(e) = printer.init() {
+        eprintln!("Failed to initialize printer: {:?}", e);
+        return None;
+    }
+    eprintln!("Printer initialized successfully");
 
     Some(printer)
 }
@@ -44,9 +60,12 @@ async fn print(
     body: Bytes,
 ) -> Result<(), StatusCode> {
     let str = std::str::from_utf8(&body).or(Err(StatusCode::UNPROCESSABLE_ENTITY))?;
+    eprintln!("Received print request: {} bytes", body.len());
+    eprintln!("Content: {:?}", str);
 
     if let None = printer {
-        println!("{}", "-".repeat(48))
+        eprintln!("No printer connected, outputting to stdout");
+        println!("{}", "-".repeat(CHARS_PER_LINE))
     }
 
     for line in str.lines() {
@@ -55,14 +74,16 @@ async fn print(
 
         let mut write_chunk = |chunk: &str| {
             if let Some(ref mut printer) = printer {
-                printer.write(chunk).expect("failed to write chunk");
+                if let Err(e) = printer.write(chunk) {
+                    eprintln!("Failed to write chunk: {:?}", e);
+                }
             } else {
                 print!("{}", chunk)
             }
         };
 
         for chunk in line.split_ascii_whitespace() {
-            if chars_written + chunk.len() + extra_char > 48 {
+            if chars_written + chunk.len() + extra_char > CHARS_PER_LINE {
                 write_chunk("\n");
                 chars_written = 0;
                 extra_char = 0;
@@ -81,8 +102,15 @@ async fn print(
         write_chunk("\n")
     }
 
-    if let None = printer {
-        println!("{}", "-".repeat(48))
+    if let Some(ref mut printer) = printer {
+        eprintln!("Flushing print buffer...");
+        if let Err(e) = printer.print_cut() {
+            eprintln!("Failed to print: {:?}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        eprintln!("Print successful");
+    } else {
+        println!("{}", "-".repeat(CHARS_PER_LINE))
     }
 
     Ok(())
