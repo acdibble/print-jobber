@@ -1,13 +1,51 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
+  version:
+    name: Calculate Version
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate new version
+        id: bump
+        run: |
+          # Get latest tag or default to v0.0.0
+          LATEST=$(git tag -l 'v*' | sort -V | tail -n1 || echo "v0.0.0")
+          LATEST=${LATEST#v}
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
+
+          case "${{ inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumping ${{ inputs.bump }}: v$LATEST -> $NEW_VERSION"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -43,21 +81,32 @@ jobs:
           path: ${{ matrix.artifact }}.tar.gz
 
   release:
-    name: Create Release
-    needs: build
+    name: Tag and Release
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ needs.version.outputs.new_version }}
+          git push origin ${{ needs.version.outputs.new_version }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.new_version }}
           files: artifacts/*.tar.gz
           generate_release_notes: true
