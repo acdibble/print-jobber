@@ -9,4 +9,3 @@ escpos = { version = "0.17.0", features = ["usb"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
-urlencoding = "2"

@@ -7,25 +7,8 @@ struct PrintParams {
     raw: bool,
 }
 
-#[derive(Deserialize)]
-struct WeatherParams {
-    #[serde(default = "default_city")]
-    city: String,
-}
-
-fn default_city() -> String { "Berlin".to_string() }
-
-#[derive(Deserialize)]
-struct GeocodingResponse {
-    results: Option<Vec<GeocodingResult>>,
-}
-
-#[derive(Deserialize)]
-struct GeocodingResult {
-    name: String,
-    latitude: f64,
-    longitude: f64,
-}
+const BERLIN_LAT: f64 = 52.52;
+const BERLIN_LON: f64 = 13.405;
 
 #[derive(Deserialize)]
 struct WeatherResponse {
@@ -206,41 +189,12 @@ fn format_time(iso: &str) -> &str {
 
 async fn weather(
     State(mut printer): State<Option<UsbPrinter>>,
-    Query(params): Query<WeatherParams>,
 ) -> Result<(), StatusCode> {
-    eprintln!("Weather request for city={}", params.city);
-
-    let geo_url = format!(
-        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1",
-        urlencoding::encode(&params.city)
-    );
-
-    let geo_response = reqwest::get(&geo_url)
-        .await
-        .map_err(|e| {
-            eprintln!("Failed to geocode city: {:?}", e);
-            StatusCode::BAD_GATEWAY
-        })?
-        .json::<GeocodingResponse>()
-        .await
-        .map_err(|e| {
-            eprintln!("Failed to parse geocoding response: {:?}", e);
-            StatusCode::BAD_GATEWAY
-        })?;
-
-    let location = geo_response
-        .results
-        .and_then(|r| r.into_iter().next())
-        .ok_or_else(|| {
-            eprintln!("City not found: {}", params.city);
-            StatusCode::NOT_FOUND
-        })?;
-
-    eprintln!("Resolved {} to lat={}, lon={}", location.name, location.latitude, location.longitude);
+    eprintln!("Weather request for Berlin");
 
     let url = format!(
         "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&daily=temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,precipitation_probability_max,weather_code,sunrise,sunset,uv_index_max,wind_speed_10m_max,wind_gusts_10m_max&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=1",
-        location.latitude, location.longitude
+        BERLIN_LAT, BERLIN_LON
     );
 
     let response = reqwest::get(&url)
@@ -258,8 +212,7 @@ async fn weather(
 
     let daily = &response.daily;
     let forecast = format!(
-        "{}\n\n{}\n\nHigh: {:.0}F  Low: {:.0}F\nFeels: {:.0}F / {:.0}F\nPrecip: {}%\nUV Index: {:.0}\nWind: {:.0} mph (gusts {:.0})\n\nSunrise: {}\nSunset: {}\n",
-        location.name,
+        "Berlin\n\n{}\n\nHigh: {:.0}F  Low: {:.0}F\nFeels: {:.0}F / {:.0}F\nPrecip: {}%\nUV Index: {:.0}\nWind: {:.0} mph (gusts {:.0})\n\nSunrise: {}\nSunset: {}\n",
         weather_code_to_description(daily.weather_code[0]),
         daily.temperature_2m_max[0],
         daily.temperature_2m_min[0],
