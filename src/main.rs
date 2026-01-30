@@ -36,8 +36,15 @@ struct WeatherResponse {
 struct DailyWeather {
     temperature_2m_max: Vec<f64>,
     temperature_2m_min: Vec<f64>,
+    apparent_temperature_max: Vec<f64>,
+    apparent_temperature_min: Vec<f64>,
     precipitation_probability_max: Vec<u8>,
     weather_code: Vec<u8>,
+    sunrise: Vec<String>,
+    sunset: Vec<String>,
+    uv_index_max: Vec<f64>,
+    wind_speed_10m_max: Vec<f64>,
+    wind_gusts_10m_max: Vec<f64>,
 }
 use escpos::{driver, printer::Printer, printer_options::PrinterOptions, utils::Protocol};
 use std::{env, time::Duration};
@@ -192,7 +199,15 @@ fn weather_code_to_description(code: u8) -> &'static str {
     }
 }
 
-async fn weather(Query(params): Query<WeatherParams>) -> Result<String, StatusCode> {
+fn format_time(iso: &str) -> &str {
+    // ISO format: "2024-01-15T07:30" -> "07:30"
+    iso.split('T').nth(1).unwrap_or(iso)
+}
+
+async fn weather(
+    State(mut printer): State<Option<UsbPrinter>>,
+    Query(params): Query<WeatherParams>,
+) -> Result<(), StatusCode> {
     eprintln!("Weather request for city={}", params.city);
 
     let geo_url = format!(
@@ -224,7 +239,7 @@ async fn weather(Query(params): Query<WeatherParams>) -> Result<String, StatusCo
     eprintln!("Resolved {} to lat={}, lon={}", location.name, location.latitude, location.longitude);
 
     let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=1",
+        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&daily=temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,precipitation_probability_max,weather_code,sunrise,sunset,uv_index_max,wind_speed_10m_max,wind_gusts_10m_max&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=1",
         location.latitude, location.longitude
     );
 
@@ -243,13 +258,41 @@ async fn weather(Query(params): Query<WeatherParams>) -> Result<String, StatusCo
 
     let daily = &response.daily;
     let forecast = format!(
-        "{}\n\nHigh: {:.0}F  Low: {:.0}F\nPrecip: {}%\n{}\n",
+        "{}\n\n{}\n\nHigh: {:.0}F  Low: {:.0}F\nFeels: {:.0}F / {:.0}F\nPrecip: {}%\nUV Index: {:.0}\nWind: {:.0} mph (gusts {:.0})\n\nSunrise: {}\nSunset: {}\n",
         location.name,
+        weather_code_to_description(daily.weather_code[0]),
         daily.temperature_2m_max[0],
         daily.temperature_2m_min[0],
+        daily.apparent_temperature_max[0],
+        daily.apparent_temperature_min[0],
         daily.precipitation_probability_max[0],
-        weather_code_to_description(daily.weather_code[0])
+        daily.uv_index_max[0],
+        daily.wind_speed_10m_max[0],
+        daily.wind_gusts_10m_max[0],
+        format_time(&daily.sunrise[0]),
+        format_time(&daily.sunset[0])
     );
 
-    Ok(forecast)
+    if printer.is_none() {
+        eprintln!("No printer connected, outputting to stdout");
+        println!("{}", "-".repeat(CHARS_PER_LINE));
+    }
+
+    for line in forecast.lines() {
+        write_chunk(&mut printer, line);
+        write_chunk(&mut printer, "\n");
+    }
+
+    if let Some(ref mut printer) = printer {
+        eprintln!("Flushing print buffer...");
+        if let Err(e) = printer.print_cut() {
+            eprintln!("Failed to print: {:?}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        eprintln!("Print successful");
+    } else {
+        println!("{}", "-".repeat(CHARS_PER_LINE));
+    }
+
+    Ok(())
 }
