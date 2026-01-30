@@ -8,6 +8,8 @@ if [[ ! "$BUMP" =~ ^(patch|minor|major)$ ]]; then
   exit 1
 fi
 
+git fetch --tags
+
 # Calculate new version
 LATEST=$(git tag -l 'v*' | sort -V | tail -n1 || echo "v0.0.0")
 LATEST_NUM=${LATEST#v}
